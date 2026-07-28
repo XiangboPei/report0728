@@ -1,7 +1,5 @@
 # ProRL 课程报告代码与实验归档
 
-本目录只保留课程报告需要的 Baseline、M1、M2、M3、原生 Pareto、M4 及 M4 机制验证。其余早期候选方案均已从入口、训练器和辅助函数中删除。
-
 ## 整理顺序
 
 1. **Baseline**：原始 ProRL，`method_mode=none`。
@@ -81,5 +79,3 @@ outputs/raw/light_10epoch/
 ```bash
 python scripts/report/collect_all_results.py
 ```
-
-正式 50 epoch 与轻量协议训练预算不同，只能在各自表内比较，不能直接比较绝对数值。
