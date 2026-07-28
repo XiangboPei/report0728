@@ -1,1 +1,250 @@
-# report0728
+<p align="center">
+  <h1 align="center">🚀 ProRL: Effective Reinforcement Learning for Proactive Recommendation via Rectified Policy Gradient Estimation</h1>
+  <p align="center">
+    <em>Official implementation — ICML 2026</em>
+  </p>
+</p>
+
+<p align="center">
+  <a href="#-overview">Overview</a> •
+  <a href="#-installation">Installation</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-training">Training</a> •
+  <a href="#-evaluation">Evaluation</a>
+</p>
+
+---
+
+## 📋 Overview
+
+**ProRL** is a framework for **Proactive Recommendation** that combines semantic-ID item representations with reinforcement learning. The model learns to generate item trajectories that gradually steer users toward a target item while jointly optimizing several objectives:
+
+- **IoI (Increase of Interest)** — Increase in the probability of the user engaging with the target item.
+- **IoR (Increase of Rank)** — Increase in the ranking of the target item.
+- **CTR (Click-Through Rate)** — Predicted click probability of the recommended intermediate items.
+
+<p align="center">
+  <img src="fig/framework.png" alt="ProRL Framework" width="100%">
+</p>
+
+### Key Features
+
+- 🎯 **Multi-objective reward** — Jointly optimizes IoI, IoR and CTR with configurable weights.
+- 🔄 **Rectified policy gradient (ProRL)** — Stable RL training with KL-divergence regularization toward the pretrained reference policy.
+- 📊 **Semantic-ID tokenization** — Items are represented as short codes from a learned codebook.
+- ⚡ **Distributed training** — Multi-GPU training via 🤗 Accelerate.
+
+---
+
+## 🔧 Installation
+
+### Requirements
+
+- Python ≥ 3.11
+- CUDA ≥ 12.4 (we tested on 4× GPUs)
+- PyTorch ≥ 1.12
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/your-repo/ProRL.git
+cd ProRL
+
+# Install PyTorch (CUDA 12.4)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# Core dependencies
+pip install transformers==4.45.2
+pip install accelerate==1.0.1
+pip install sentence_transformers
+pip install tensorboard
+pip install recbole
+
+# RecBole pulls in a newer numpy — pin to 1.26.0
+pip uninstall -y numpy
+pip install numpy==1.26.0
+```
+
+---
+
+## 🚀 Quick Start
+
+All training is launched through ready-to-use shell scripts in `scripts/`. They handle the `accelerate` launch, paths and hyperparameters for you.
+
+### ProRL on all three datasets sequentially
+
+```bash
+bash scripts/run_prorl.sh
+```
+---
+
+## 🏋️ Training
+
+### Stage 1 — Pretraining
+
+Each pretrain script runs `proactive_pretrain.py` through `accelerate` on 4 GPUs by default:
+
+```bash
+PYTHONNOUSERSITE=1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+python -m accelerate.commands.launch \
+  --config_file ./config/rec_config.yaml \
+  --main_process_port 16086 \
+  --num_processes 4 \
+  ./proactive_pretrain.py \
+  --dataset ml-1m \
+  --config_file ./config/ptconfig.yaml
+```
+
+Outputs are written under `ckpt/<dataset>/<timestamp-hash>/` and logs under `run_logs/`. The trainer automatically saves the best checkpoint on the validation metric (`IoI_max@10` by default).
+
+### Stage 2 — ProRL Fine-tuning
+
+ProRL fine-tunes the pretrained policy with a rectified policy-gradient objective and a KL penalty against the frozen reference policy. The corresponding script for ML-1M looks like:
+
+```bash
+PYTHONNOUSERSITE=1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+python -m accelerate.commands.launch \
+  --config_file ./config/rec_config.yaml \
+  --main_process_port 16086 \
+  --num_processes 4 \
+  ./Proactive_RL_prorl.py \
+  --dataset ml-1m \
+  --config_file ./config/prorl.yaml \
+  --pretrained_ckpt ./ckpt/ml-1m/<your-pretrain-run>/<your-pretrain-run>.pth \
+  --mode prorl \
+  --prorl_beta 1e-2 \
+  --prorl_lr 1e-4 \
+  --prorl_gamma 1 \
+  --prorl_epochs 50 \
+  --reward_weight_ctr 1.0 \
+  --reward_weight_ioi 1.0 \
+  --reward_weight_ior 1.0
+```
+
+#### Key CLI arguments (`Proactive_RL_prorl.py`)
+
+| Argument | Description | Default (see `config/prorl.yaml`) |
+|----------|-------------|-----------------------------------|
+| `--dataset` | One of `ml-1m`, `Steam`, `Books` | — (required) |
+| `--config_file` | Path to the ProRL YAML config | — (required) |
+| `--pretrained_ckpt` | Path to the Stage-1 `.pth` checkpoint | — (required) |
+| `--mode` | `prorl` for training, `eval` for evaluation-only | — (required) |
+| `--prorl_beta` | KL-divergence penalty coefficient β | `1e-2` |
+| `--prorl_lr` | RL learning rate | dataset-specific (see scripts) |
+| `--prorl_gamma` | Discount factor γ for cumulative rewards | `1.0` |
+| `--prorl_epochs` | Number of RL training epochs | `50` |
+| `--prorl_num_samples` | Rollout samples per prompt (group size) | `16` |
+| `--reward_weight_ctr` | Weight of the CTR reward term | `1.0` |
+| `--reward_weight_ioi` | Weight of the IoI reward term | `1.0` |
+| `--reward_weight_ior` | Weight of the IoR reward term | `1.0` |
+
+---
+
+### Reported metrics
+
+| Metric | Description |
+|--------|-------------|
+| `IoI@K` | Increase of Interest at top-K trajectory length |
+| `IoR@K` | Increase of Rank at top-K trajectory length |
+| `CTR@K` | Average click-through rate over the top-K trajectory |
+| `Coherence@K` | Trajectory coherence based on item attributes |
+
+Top-K values default to `[1, 5, 10]` (see `config/prorl.yaml`).
+
+---
+
+## 🎛️ Configuration Reference
+
+### Model architecture (T5 backbone) — `config/ptconfig.yaml` / `config/prorl.yaml`
+
+```yaml
+num_layers: 3
+num_decoder_layers: 3
+d_model: 128
+d_ff: 512
+num_heads: 4
+d_kv: 64
+dropout_rate: 0.1
+activation_function: relu
+```
+
+### Semantic-ID tokenizer
+
+```yaml
+n_codebooks: 3
+codebook_size: 256
+expand_final: True
+token_prefix: "qwen3-embedding-8b-pca"
+token_suffix: "sem_ids"
+```
+
+---
+
+## 📁 Project Structure
+
+```
+ProRL/
+├── config/                              # YAML configs
+│   ├── ptconfig.yaml                    # Pretraining config
+│   ├── prorl.yaml                       # ProRL config
+│   ├── rec_config.yaml                  # Accelerate launch config
+│   ├── ml-1m-sas_sasrec_config.yaml     # RecBole evaluator configs
+│   ├── steam-merged_sasrec_config.yaml
+│   ├── amazon-books_sasrec_config.yaml
+│   └── *_gru4rec_config.yaml            # Alternative GRU4Rec evaluators
+│
+├── scripts/                             # Launcher scripts (entry points)
+│   ├── run_pretrain.sh                  # Run all pretrain scripts in sequence
+│   ├── run_prorl.sh                     # Run all RL scripts in sequence
+│   ├── Pretrain/
+│   │   ├── run_ml1m_pretrain.sh
+│   │   ├── run_steam_pretrain.sh
+│   │   └── run_books_pretrain.sh
+│   └── RL/
+│       ├── run_ml1m_prorl.sh
+│       ├── run_steam_prorl.sh
+│       └── run_books_prorl.sh
+│
+├── datasets/                            # Datasets go here (you create this)
+├── ckpt/                                # Checkpoints (auto-created)
+│
+├── proactive_pretrain.py                # Stage-1 entry point
+├── Proactive_RL_prorl.py                # Stage-2 (ProRL) entry point
+├── model.py                             # PRARec model (T5 backbone)
+├── trainer.py                           # Stage-1 trainer
+├── trainer_RL_prorl.py                  # Stage-2 (ProRL) trainer
+├── tokenizer.py                         # Semantic-ID tokenizer
+├── dataset.py                           # ProactiveRecDataset
+├── collator.py                          # Train / RL collators
+├── data_utils.py                        # Dataset / dataloader helpers
+├── evaluator.py                         # Reward model + metric computation
+├── utils.py                             # General utilities
+└── README.md
+```
+
+---
+
+## 📚 Reference
+
+```
+@misc{hou2026prorleffectivereinforcementlearning,
+      title={ProRL: Effective Reinforcement Learning for Proactive Recommendation via Rectified Policy Gradient Estimation}, 
+      author={Hongru Hou and Tiehua Mei and Denghui Geng and Jinhui Huang and Ao Xu and Hengrui Chen and Jiaqing Liang and Deqing Yang},
+      year={2026},
+      eprint={2605.28293},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2605.28293}, 
+}
+```
+
+---
+
+## 🙏 Acknowledgments
+
+- [RecBole](https://github.com/RUCAIBox/RecBole) — sequential recommendation baselines and the SASRec and GRU4Rec evaluator.
+- [Hugging Face Transformers](https://github.com/huggingface/transformers) — T5 implementation.
+- [Hugging Face Accelerate](https://github.com/huggingface/accelerate) — distributed training.
